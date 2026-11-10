@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      simulate_down:
+        description: "Pretend the site is down, to test the Discord alert (the next scheduled run posts the recovery)"
+        type: boolean
+        default: false
 
 permissions:
   actions: write # re-enable this workflow (keepalive) and read earlier runs
@@ -38,6 +43,9 @@ jobs:
           set +e
           out=$(bash check.sh)
           rc=$?
+          if [ "${{ inputs.simulate_down }}" = "true" ]; then
+            out="SIMULATED: manual test of the alert (site is actually: rc=$rc)"; rc=1
+          fi
           echo "$out"
           {
             echo "failed=$([ $rc -ne 0 ] && echo true || echo false)"
