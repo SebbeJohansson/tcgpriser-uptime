@@ -1,0 +1,83 @@
+name: uptime
+
+# Runs off the VPS on purpose: on 2026-11-09 the whole box went dark for 35 hours and the only alert
+# lived on the box itself. Alerts on a change of state only (down, recovered), so a long outage is one
+# message, not one every five minutes. The previous completed run's conclusion is the stored state.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write # re-enable this workflow (keepalive) and read earlier runs
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Previous state
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(gh run list -R "$GITHUB_REPOSITORY" --workflow uptime.yml --status completed -L 1 \
+                   --json conclusion -q '.[0].conclusion' || true)
+          echo "conclusion=${prev:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "previous run: ${prev:-unknown}"
+
+      - name: Check site by content
+        id: check
+        run: |
+          set +e
+          out=$(bash check.sh)
+          rc=$?
+          echo "$out"
+          {
+            echo "failed=$([ $rc -ne 0 ] && echo true || echo false)"
+            echo "detail<<EOF"
+            echo "$out"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Alert on change of state
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_ADMIN_CHANNEL_ID: ${{ secrets.DISCORD_ADMIN_CHANNEL_ID }}
+          PREV: ${{ steps.prev.outputs.conclusion }}
+          FAILED: ${{ steps.check.outputs.failed }}
+          DETAIL: ${{ steps.check.outputs.detail }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          msg=""
+          if [ "$FAILED" = true ] && [ "$PREV" != failure ]; then
+            msg=$(printf '🔴 **tcgpriser is DOWN** (checked from GitHub Actions)\n```\n%s\n```\n%s' "$DETAIL" "$RUN_URL")
+          elif [ "$FAILED" = false ] && [ "$PREV" = failure ]; then
+            msg=$(printf '🟢 **tcgpriser recovered.** All checks pass again.\n%s' "$RUN_URL")
+          fi
+          if [ -n "$msg" ]; then
+            jq -n --arg c "$msg" '{content: $c}' | curl -sS -f -X POST \
+              -H "Authorization: Bot $DISCORD_BOT_TOKEN" -H "Content-Type: application/json" \
+              --data @- "https://discord.com/api/v10/channels/$DISCORD_ADMIN_CHANNEL_ID/messages" > /dev/null
+            echo "alert sent"
+          else
+            echo "no change of state (previous: $PREV, failed now: $FAILED)"
+          fi
+
+      # GitHub pauses scheduled workflows in a public repo after 60 days without commits. Enabling
+      # the workflow again resets that clock.
+      - name: Keepalive
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable uptime.yml -R "$GITHUB_REPOSITORY" || true
+
+      - name: Mark run failed when the site is down
+        if: steps.check.outputs.failed == 'true'
+        run: exit 1
