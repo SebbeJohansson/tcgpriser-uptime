@@ -5,7 +5,8 @@ name: uptime
 # message, not one every five minutes. The previous completed run's conclusion is the stored state.
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # Off the round minutes: GitHub delays or drops scheduled runs at :00/:05/… under load.
+    - cron: "2-59/5 * * * *"
   workflow_dispatch:
     inputs:
       simulate_down:
@@ -57,7 +58,7 @@ jobs:
       - name: Alert on change of state
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
-          DISCORD_ADMIN_CHANNEL_ID: ${{ secrets.DISCORD_ADMIN_CHANNEL_ID }}
+          SITE_ALERTS_CHANNEL_ID: ${{ secrets.SITE_ALERTS_CHANNEL_ID }}
           PREV: ${{ steps.prev.outputs.conclusion }}
           FAILED: ${{ steps.check.outputs.failed }}
           DETAIL: ${{ steps.check.outputs.detail }}
@@ -72,7 +73,7 @@ jobs:
           if [ -n "$msg" ]; then
             jq -n --arg c "$msg" '{content: $c}' | curl -sS -f -X POST \
               -H "Authorization: Bot $DISCORD_BOT_TOKEN" -H "Content-Type: application/json" \
-              --data @- "https://discord.com/api/v10/channels/$DISCORD_ADMIN_CHANNEL_ID/messages" > /dev/null
+              --data @- "https://discord.com/api/v10/channels/$SITE_ALERTS_CHANNEL_ID/messages" > /dev/null
             echo "alert sent"
           else
             echo "no change of state (previous: $PREV, failed now: $FAILED)"
